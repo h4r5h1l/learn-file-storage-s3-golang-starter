@@ -14,13 +14,18 @@ import (
 )
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
+	// Limit request body to 1 GiB to prevent memory exhaustion
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<30)
+
+	// Parse and validate the video ID from the URL path
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid video ID", err)
 		return
 	}
+
+	// Authenticate the request via JWT bearer token
 	token, err := auth.GetBearerToken(r.Header)
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT", err)
@@ -31,6 +36,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusUnauthorized, "Couldn't validate JWT", err)
 		return
 	}
+
+	// Fetch the video record and confirm the requesting user owns it
 	video, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't get video data", err)
@@ -40,6 +47,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusUnauthorized, "User doesn't have access to this video", nil)
 		return
 	}
+
+	// Extract the uploaded file from the multipart form
 	file, header, err := r.FormFile("video")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Couldn't read video file", err)
@@ -47,6 +56,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 	defer file.Close()
 
+	// Validate that the upload is an MP4
 	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Couldn't parse media type", err)
@@ -57,12 +67,13 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Buffer the upload to a temp file so ffprobe can read it from disk
 	tmpFile, err := os.CreateTemp("", "tubely-upload.mp4")
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't create temp file", err)
 		return
 	}
-	defer os.Remove(tmpFile.Name())
+	defer os.Remove(tmpFile.Name()) // clean up after the request finishes
 	defer tmpFile.Close()
 
 	_, err = io.Copy(tmpFile, file)
@@ -76,6 +87,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Determine the S3 prefix based on the video's aspect ratio
 	aspectRatio, err := getVideoAspectRatio(tmpFile.Name())
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't get video aspect ratio", err)
@@ -90,6 +102,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	default:
 		prefix = "other/"
 	}
+
+	// Build a random S3 key under the appropriate prefix
 	var randomPath [32]byte
 	_, err = rand.Read(randomPath[:])
 	if err != nil {
@@ -98,11 +112,14 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 	key := prefix + hex.EncodeToString(randomPath[:]) + ".mp4"
 
+	// Seek back to the start before streaming to S3
 	_, err = tmpFile.Seek(0, io.SeekStart)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't seek to beginning of temp file", err)
 		return
 	}
+
+	// Upload the video to S3
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &key,
@@ -114,6 +131,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Persist the public S3 URL on the video record
 	videoURL := "https://" + cfg.s3Bucket + ".s3." + cfg.s3Region + ".amazonaws.com/" + key
 	video.VideoURL = &videoURL
 	err = cfg.db.UpdateVideo(video)
