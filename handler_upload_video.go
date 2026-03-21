@@ -70,16 +70,39 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't copy video data", err)
 		return
 	}
+	_, err = tmpFile.Seek(0, io.SeekStart)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't seek to beginning of temp file", err)
+		return
+	}
 
-	tmpFile.Seek(0, io.SeekStart)
+	aspectRatio, err := getVideoAspectRatio(tmpFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get video aspect ratio", err)
+		return
+	}
+	var prefix string
+	switch aspectRatio {
+	case "16:9":
+		prefix = "landscape/"
+	case "9:16":
+		prefix = "portrait/"
+	default:
+		prefix = "other/"
+	}
 	var randomPath [32]byte
 	_, err = rand.Read(randomPath[:])
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't generate video name", err)
 		return
 	}
-	key := hex.EncodeToString(randomPath[:]) + ".mp4"
+	key := prefix + hex.EncodeToString(randomPath[:]) + ".mp4"
 
+	_, err = tmpFile.Seek(0, io.SeekStart)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't seek to beginning of temp file", err)
+		return
+	}
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &key,
@@ -98,5 +121,6 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update video data", err)
 		return
 	}
+
 	respondWithJSON(w, http.StatusOK, video)
 }
