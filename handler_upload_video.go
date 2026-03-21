@@ -112,6 +112,19 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 	key := prefix + hex.EncodeToString(randomPath[:]) + ".mp4"
 
+	// Process video for faststart
+	processedPath, err := processVideoForFastStart(tmpFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't process video for faststart", err)
+		return
+	}
+	tmpFile, err = os.Open(processedPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't open processed video file", err)
+		return
+	}
+	defer tmpFile.Close()
+	defer os.Remove(tmpFile.Name()) // clean up the processed file as well
 	// Seek back to the start before streaming to S3
 	_, err = tmpFile.Seek(0, io.SeekStart)
 	if err != nil {
