@@ -111,7 +111,6 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	key := prefix + hex.EncodeToString(randomPath[:]) + ".mp4"
-
 	// Process video for faststart
 	processedPath, err := processVideoForFastStart(tmpFile.Name())
 	if err != nil {
@@ -145,9 +144,16 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Persist the public S3 URL on the video record
-	videoURL := "https://" + cfg.s3Bucket + ".s3." + cfg.s3Region + ".amazonaws.com/" + key
+	videoURL := cfg.s3Bucket + "," + key
 	video.VideoURL = &videoURL
 	err = cfg.db.UpdateVideo(video)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't update video record with S3 URL", err)
+		return
+	}
+
+	// Return the updated video record with a signed URL for immediate playback
+	video, err = cfg.dbVideoToSignedVideo(video)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update video data", err)
 		return
